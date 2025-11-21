@@ -48,11 +48,12 @@ export const revalidate = 0;
 
 const INSTRUCTIONS = `placeholder`;
 
+
 // Helper function to extract JSON action from text
 function extractActionFromText(text: string): { action: any; cleanText: string } | null {
   // Look for JSON action block in format: ```json ... ``` or just {...}
   const jsonBlockMatch = text.match(/```json\s*([\s\S]*?)\s*```/);
-  const jsonMatch = text.match(/\{[^{}]*"action"[^{}]*\}/);
+  const jsonMatch = text.match(/\{[^{}]*"action"[^{}]*\}|\{[^{}]*"tool"[^{}]*\}/);
   
   let actionJson = null;
   let cleanText = text;
@@ -73,7 +74,7 @@ function extractActionFromText(text: string): { action: any; cleanText: string }
     }
   }
 
-  if (actionJson && actionJson.action) {
+  if (actionJson && (actionJson.action || actionJson.tool)) {
     return { action: actionJson, cleanText };
   }
 
@@ -129,19 +130,12 @@ export async function POST(request: Request) {
           });
 
           let fullText = "";
-          let hasAction = false;
 
           for await (const chunk of response) {
             const delta = chunk.choices[0]?.delta;
             
             if (delta?.content) {
               fullText += delta.content;
-              
-              // Stream text delta
-              sendEvent({
-                type: "text-delta",
-                textDelta: delta.content,
-              });
             }
           }
 
@@ -149,18 +143,26 @@ export async function POST(request: Request) {
           const extracted = extractActionFromText(fullText);
           
           if (extracted) {
-            hasAction = true;
             const { action, cleanText } = extracted;
             
-            // Add assistant message with clean text (no action JSON)
+            // If there's clean text along with action, stream it first as a separate message
             if (cleanText) {
+              // Stream the text content (without the action JSON)
+              for (const char of cleanText) {
+                sendEvent({
+                  type: "text-delta",
+                  textDelta: char,
+                });
+              }
+              
+              // Add to chat history
               chatHistory.push({
                 role: "assistant",
                 content: cleanText,
               });
             }
 
-            // Execute the action
+            // Execute the action as a separate element
             const toolCallId = `call_${Date.now()}_${Math.random()}`;
             const toolName = action.tool === "bash" ? "bash" : "computer";
             
@@ -404,8 +406,16 @@ SCREEN: ${width}×${height} pixels | Aspect ratio: 4:3 | Origin: (0,0) at TOP-LE
               });
             }
           } else {
-            // No action found, just text message
+            // No action found, just text message - stream it
             if (fullText) {
+              // Stream the text content character by character
+              for (const char of fullText) {
+                sendEvent({
+                  type: "text-delta",
+                  textDelta: char,
+                });
+              }
+              
               chatHistory.push({
                 role: "assistant",
                 content: fullText,
