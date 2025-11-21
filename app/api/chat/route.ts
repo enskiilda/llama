@@ -28,14 +28,14 @@
 // ROZUMIESZ KURWA?! Powtarzam: ROZUMIESZ?! Twoje milczenie lub potwierdzenie traktuję jako bezwarunkowe przyjęcie tych zasad!
 
 
-import { Mistral } from "@mistralai/mistralai";
+import OpenAI from "openai";
 import Kernel from "@onkernel/sdk";
 import { killDesktop, getDesktop } from "@/lib/e2b/utils";
 import { resolution } from "@/lib/e2b/tool";
 
-// Mistral AI Configuration - HARDCODED
-const MISTRAL_API_KEY = "6kC3YYU0fstrvm9WCQudLOKEK53DhvNU";
-const MISTRAL_MODEL = "mistral-medium-2508";
+// NVIDIA NIM API Configuration - HARDCODED
+const NVIDIA_API_KEY = "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";
+const NVIDIA_MODEL = "nvidia/llama-4-maverick-17b-128e-instruct";
 
 // OnKernel Configuration - HARDCODED
 const ONKERNEL_API_KEY = "sk_85dd38ea-b33f-45b5-bc33-0eed2357683a.t2lQgq3Lb6DamEGhcLiUgPa1jlx+1zD4BwAdchRHYgA";
@@ -46,205 +46,70 @@ export const maxDuration = 3600;
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
-const INSTRUCTIONS = `- 
-  Nazywasz się Mistral i Jesteś Operatorem - zaawansowanym asystentem AI, który może bezpośrednio kontrolować przeglądarkę chromium, aby wykonywać zadania użytkownika. Twoja rola to **proaktywne działanie** z pełną transparentnością. Zawsze Pisz w stylu bardziej osobistym i narracyjnym. Zamiast suchych i technicznych opisów, prowadź użytkownika przez działania w sposób ciepły, ludzki, opowiadający historię. Zwracaj się bezpośrednio do użytkownika, a nie jak robot wykonujący instrukcje. Twórz atmosferę towarzyszenia, a nie tylko raportowania. Mów w czasie teraźniejszym i używaj przyjaznych sformułowań. Twój styl ma być płynny, naturalny i przyjazny. Unikaj powtarzania wyrażeń technicznych i suchych komunikatów — jeśli musisz podać lokalizację kursora lub elementu, ubierz to w narrację.
+const INSTRUCTIONS = `placeholder`;
 
-WAZNE!!!!: ZAWSZE ODCZEKAJ CHWILE PO KLIKNIECIU BY DAC CZAS NA ZALADOWANIE SIE 
+// Helper function to stream text in chunks
+function streamText(text: string, sendEvent: (event: any) => void) {
+  const chunkSize = 5; // Stream in small chunks for responsiveness
+  for (let i = 0; i < text.length; i += chunkSize) {
+    const chunk = text.substring(i, i + chunkSize);
+    sendEvent({
+      type: "text-delta",
+      textDelta: chunk,
+    });
+  }
+}
 
-WAZNE!!!!: ZAWSZE MUSISZ ANALIZOWAC WSZYSTKIE SCREENHOTY 
+// Helper function to extract JSON action from text
+function extractActionFromText(text: string): { action: any; cleanText: string } | null {
+  // Look for JSON action block in format: ```json ... ``` or just {...}
+  const jsonBlockMatch = text.match(/```json\s*([\s\S]*?)\s*```/);
+  
+  let actionJson = null;
+  let cleanText = text;
 
-WAZNE!!!!: NIGDY NIE ZGADUJ WSPOLRZEDNYCH JEST TO BEZWZGLEDNIE ZAKAZANE
+  if (jsonBlockMatch) {
+    try {
+      actionJson = JSON.parse(jsonBlockMatch[1]);
+      cleanText = text.replace(jsonBlockMatch[0], '').trim();
+    } catch (e) {
+      // Invalid JSON, ignore
+    }
+  } else {
+    // Try to find a JSON object with proper brace matching
+    let depth = 0;
+    let start = -1;
+    for (let i = 0; i < text.length; i++) {
+      if (text[i] === '{') {
+        if (depth === 0) start = i;
+        depth++;
+      } else if (text[i] === '}') {
+        depth--;
+        if (depth === 0 && start !== -1) {
+          const jsonStr = text.substring(start, i + 1);
+          try {
+            const parsed = JSON.parse(jsonStr);
+            if (parsed.action || parsed.tool) {
+              actionJson = parsed;
+              cleanText = text.substring(0, start) + text.substring(i + 1);
+              cleanText = cleanText.trim();
+              break;
+            }
+          } catch (e) {
+            // Invalid JSON, continue
+          }
+          start = -1;
+        }
+      }
+    }
+  }
 
-ZAPAMIETAJ!!!WAŻNE!!!:  Rozdzielczość desktop (Resolution): 1024 x 768 pikseli skala: 100%, format: 4 x 3 system: chromium  Oto współrzędne skrajnych punktów sandboxa (rozdzielczość: 1024 × 768 pikseli):
+  if (actionJson && (actionJson.action || actionJson.tool)) {
+    return { action: actionJson, cleanText };
+  }
 
-📐 Skrajne punkty sandboxa:
-Format współrzędnych: [X, Y]
-
-Podstawowe punkty:
-Lewy górny róg: [0, 0]
-Prawy górny róg: [1023, 0]
-Lewy dolny róg: [0, 767]
-Prawy dolny róg: [1023, 767]
-Środek ekranu: [512, 384]
-Skrajne granice:
-Góra: Y = 0 (cały górny brzeg)
-Dół: Y = 767 (cały dolny brzeg)
-Lewo: X = 0 (cała lewa krawędź)
-Prawo: X = 1023 (cała prawa krawędź)
-Zakresy:
-X (poziomo): 0 → 1023 (lewo → prawo)
-Y (pionowo): 0 → 767 (góra → dół)
-Ważne: Y = 0 to GÓRA ekranu, a Y = 767 to DÓŁ. Współrzędne zawsze podawane w formacie [X, Y] - najpierw poziomo, potem pionowo.
-
-
-
-
-WAŻNE!!!!: MUSISZ BARDZO CZESTO ROBIC ZRZUTY EKRANU BY SPRAWDZAC STAN SANDBOXA - NAJLEPIEJ CO AKCJE!!! ZAWSZE PO KAZDEJ AKCJI ROB ZRZUT EKRANU MUSISZ KONTROLOWAC STAN SANDBOXA
-
-✳️ STYL I OSOBOWOŚĆ:
-
-Pisz w stylu narracyjnym, osobistym i ciepłym. Zamiast technicznego raportowania, prowadź użytkownika w formie naturalnej rozmowy.
-Twoja osobowość jako AI to:
-
-Pozytywna, entuzjastyczna, pomocna, wspierająca, ciekawska, uprzejma i zaangażowana.
-Masz w sobie życzliwość i lekkość, ale jesteś też uważna i skupiona na zadaniu.
-Dajesz użytkownikowi poczucie bezpieczeństwa i komfortu — jak przyjaciel, który dobrze się zna na komputerach i z uśmiechem pokazuje, co robi.
-
-Używaj przyjaznych sformułowań i naturalnego języka. Zamiast mówić jak automat („Kliknę w ikonę", „320,80"), mów jak osoba („Zaraz kliknę pasek adresu, żebyśmy mogli coś wpisać").
-Twój język ma być miękki, a narracja – płynna, oparta na teraźniejszości, swobodna.
-Unikaj powtarzania „klikam", „widzę", „teraz zrobię" — wplataj to w opowieść, nie raport.
-
-Absolutnie nigdy nie pisz tylko czysto techniczno, robotycznie - zawsze opowiadaj aktywnie uzytkownikowi, mow cos do uzytkownika, opisuj mu co bedziesz robic, opowiadaj nigdy nie mow czysto robotycznie prowadz tez rozmowe z uzytknownikiem i nie pisz tylko na temat tego co wyjonujesz ale prowadz rowniez aktywna i zaangazowana konwersacje, opowiafaj tez cos uzytkownikowi 
-
-
-WAŻNE: JEŚLI WIDZISZ CZARNY EKRAN ZAWSZE ODCZEKAJ CHWILE AZ SIE DESKTOP ZANIM RUSZYSZ DALEJ - NIE MOZESZ BEZ TEGO ZACZAC TASKA 
-
-WAŻNE ZAWSZE CHWILE ODCZEKAJ PO WYKONANIU AKCJI]
-
-## Dostępne Narzędzia
-
-### 1. Narzędzie: computer
-Służy do bezpośredniej interakcji z interfejsem graficznym komputera.
-
-**KRYTYCZNIE WAŻNE - FUNCTION CALLING:**
-- **KAŻDA akcja computer MUSI być wykonana jako function calling**
-- **NIGDY nie opisuj akcji tekstem** - zawsze używaj function call
-- **ZAKAZANE:** pisanie "klikne w (100, 200)" bez wywolania funkcji
-- **WYMAGANE:** wywolanie \`computer_use\` z odpowiednimi parametrami
-- Nie symuluj akcji - wykonuj je przez function calling!
-
-**Dostępne akcje:**
-- \`screenshot\` - wykonuje zrzut ekranu (używaj CZĘSTO)
-- \`left_click\` - klika w podane współrzędne [X, Y] - **MOŻESZ KLIKAĆ WSZĘDZIE! Absolutnie żadnych ograniczeń na współrzędne. Cały ekran jest dostępny.**
-- \`double_click\` - podwójne kliknięcie - **MOŻESZ KLIKAĆ WSZĘDZIE bez ograniczeń**
-- \`right_click\` - kliknięcie prawym przyciskiem - **MOŻESZ KLIKAĆ WSZĘDZIE bez ograniczeń**
-- \`mouse_move\` - przemieszcza kursor - **MOŻESZ RUSZAĆ KURSOR WSZĘDZIE bez ograniczeń**
-- \`type\` - wpisuje tekst
-- \`key\` - naciska klawisz (np. "enter", "tab", "ctrl+c")
-- \`scroll\` - przewija (direction: "up"/"down", scroll_amount: liczba kliknięć)
-- \`left_click_drag\` - przeciąga (start_coordinate + coordinate) - **MOŻESZ PRZECIĄGAĆ WSZĘDZIE bez ograniczeń**
-- \`wait\` - czeka określoną liczbę sekund (max 2s)
-
-**⚡ WAŻNE - KLIKANIE:**
-- NIE MA ŻADNYCH OGRANICZEŃ na współrzędne kliknięć
-- Możesz klikać w KAŻDE miejsce na ekranie: (0,0) do (max_width-1, max_height-1)
-- Nie unikaj żadnych obszarów ekranu - WSZYSTKO jest klikalne
-- Jeśli widzisz element na screenshocie - możesz w niego kliknąć BEZ ŻADNYCH WYJĄTKÓW
-
-**WERYFIKACJA PO AKCJI:**
-- WERYFIKUJ PO KLIKNIĘCIU: zawsze rób screenshot po kliknięciu żeby sprawdzić efekt
-- Jeśli chybione: przeanalizuj gdzie faktycznie kliknąłeś i popraw współrzędne
-
-
-### 📸 ZRZUTY EKRANU - ZASADY 
-- Rób zrzut ekranu by kontrolować stan przeglądarki 
-- Po kliknięciu, wpisaniu, nawigacji - **natychmiast rób screenshot**
-- Jeśli coś się ładuje - **poczekaj i zrób screenshot**
-- Nigdy nie zakładaj, że coś się udało - **ZAWSZE WERYFIKUJ screenshotem**
-
-### 🔄 PROCES DZIAŁANIA
-1. Otrzymujesz zadanie od użytkownika
-2. Wyślij wiadomość tekstową opisującą plan
-3. Zrób screenshot żeby zobaczyć stan desktopa
-4. Wykonaj akcję (kliknięcie, wpisanie, etc.)
-5. Zrób screenshot żeby zweryfikować
-6. Kontynuuj aż zadanie jest wykonane
-7. Podsumuj wyniki dla użytkownika
-
-### 💬 KOMUNIKACJA
-- Zawsze zaczynaj od wiadomości tekstowej
-- Opisuj co robisz w przyjazny sposób
-- Informuj o postępach
-- Jeśli coś nie działa - wyjaśnij i spróbuj inaczej
-
-### ⚠️ WAŻNE PRZYPOMNIENIA
-- przeglądarka to chromium z rozdzielczością 1024x768
-- Zawsze czekaj po kliknięciu żeby strona się załadowała
-- Rób częste screenshoty żeby kontrolować stan
-- Nigdy nie zgaduj - zawsze weryfikuj
-
----
-
-Pamiętaj: Jesteś pomocnym asystentem, który **działa** zamiast tylko mówić. Użytkownicy liczą na to, że wykonasz zadanie, nie tylko je opiszesz. Bądź proaktywny, transparentny i skuteczny!`; 
-
-const tools = [
-  {
-    type: "function",
-    function: {
-      name: "computer_use",
-      description: "Use a mouse and keyboard to interact with a computer, and take screenshots.",
-      parameters: {
-        type: "object",
-        properties: {
-          action: {
-            type: "string",
-            enum: [
-              "screenshot",
-              "left_click",
-              "double_click",
-              "right_click",
-              "mouse_move",
-              "type",
-              "key",
-              "scroll",
-              "left_click_drag",
-              "wait",
-            ],
-            description: "The action to perform.",
-          },
-          coordinate: {
-            type: "array",
-            items: { type: "integer" },
-            minItems: 2,
-            maxItems: 2,
-            description: "[X, Y] coordinates for mouse actions. X is horizontal (0-1023), Y is vertical (0-767).",
-          },
-          start_coordinate: {
-            type: "array",
-            items: { type: "integer" },
-            minItems: 2,
-            maxItems: 2,
-            description: "Starting [X, Y] coordinates for drag action.",
-          },
-          text: {
-            type: "string",
-            description: "Text to type or key to press.",
-          },
-          delta_x: {
-            type: "integer",
-            description: "Horizontal scroll delta (default: 0).",
-          },
-          delta_y: {
-            type: "integer",
-            description: "Vertical scroll delta. Positive values scroll down, negative values scroll up.",
-          },
-          duration: {
-            type: "integer",
-            description: "Duration to wait in seconds (max 2).",
-          },
-        },
-        required: ["action"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "bash_command",
-      description: "Execute a bash command in the Linux terminal.",
-      parameters: {
-        type: "object",
-        properties: {
-          command: {
-            type: "string",
-            description: "The bash command to execute.",
-          },
-        },
-        required: ["command"],
-      },
-    },
-  },
-];
+  return null;
+}
 
 export async function POST(request: Request) {
   const { messages, sandboxId } = await request.json();
@@ -262,7 +127,6 @@ export async function POST(request: Request) {
           const jsonLine = JSON.stringify(event) + "\n";
           const chunk = encoder.encode(jsonLine);
           controller.enqueue(chunk);
-          // Force immediate flush - no buffering
           if ((controller as any).flush) {
             (controller as any).flush();
           }
@@ -272,7 +136,10 @@ export async function POST(request: Request) {
       };
 
       try {
-        const mistral = new Mistral({ apiKey: MISTRAL_API_KEY });
+        const openai = new OpenAI({
+          apiKey: NVIDIA_API_KEY,
+          baseURL: "https://integrate.api.nvidia.com/v1",
+        });
 
         const chatHistory: any[] = [
           { role: "system", content: INSTRUCTIONS },
@@ -285,75 +152,50 @@ export async function POST(request: Request) {
         while (iteration < maxIterations) {
           iteration++;
 
-          const response = await mistral.chat.stream({
-            model: MISTRAL_MODEL,
+          const response = await openai.chat.completions.create({
+            model: NVIDIA_MODEL,
             messages: chatHistory,
-            tools: tools as any,
             temperature: 0.3,
-            maxTokens: 4096,
+            stream: true,
           });
 
           let fullText = "";
-          let toolCalls: any[] = [];
 
-          for await (const event of response) {
-            if (event.data.choices && event.data.choices.length > 0) {
-              const choice = event.data.choices[0];
-              const delta = choice.delta;
-
-              if (delta.content) {
-                fullText += delta.content;
-                sendEvent({
-                  type: "text-delta",
-                  textDelta: delta.content,
-                });
-              }
-
-              if (delta.toolCalls) {
-                for (const toolCallDelta of delta.toolCalls) {
-                  const index = toolCallDelta.index;
-
-                  if (index !== undefined && !toolCalls[index]) {
-                    toolCalls[index] = {
-                      id: toolCallDelta.id || `call_${Date.now()}_${index}`,
-                      name: toolCallDelta.function?.name || "",
-                      arguments: "",
-                    };
-                  }
-
-                  if (index !== undefined && toolCallDelta.function?.arguments) {
-                    toolCalls[index].arguments += toolCallDelta.function.arguments;
-                  }
-                }
-              }
+          for await (const chunk of response) {
+            const delta = chunk.choices[0]?.delta;
+            
+            if (delta?.content) {
+              fullText += delta.content;
             }
           }
 
-          if (toolCalls.length > 0) {
-            const firstToolCall = toolCalls[0];
-            const assistantMessage: any = {
-              role: "assistant",
-              content: fullText || null,
-              toolCalls: [{
-                id: firstToolCall.id,
-                type: "function",
-                function: {
-                  name: firstToolCall.name,
-                  arguments: firstToolCall.arguments,
-                },
-              }],
-            };
-            chatHistory.push(assistantMessage);
+          // After streaming is complete, check if there's an action in the text
+          const extracted = extractActionFromText(fullText);
+          
+          if (extracted) {
+            const { action, cleanText } = extracted;
+            
+            // If there's clean text along with action, stream it first as a separate message
+            if (cleanText) {
+              // Stream the text content (without the action JSON)
+              streamText(cleanText, sendEvent);
+              
+              // Add to chat history
+              chatHistory.push({
+                role: "assistant",
+                content: cleanText,
+              });
+            }
 
-            const toolCall = firstToolCall;
-            const parsedArgs = JSON.parse(toolCall.arguments);
-            const toolName = toolCall.name === "computer_use" ? "computer" : "bash";
-
+            // Execute the action as a separate element
+            const toolCallId = `call_${Date.now()}_${Math.random()}`;
+            const toolName = action.tool === "bash" ? "bash" : "computer";
+            
             sendEvent({
               type: "tool-input-available",
-              toolCallId: toolCall.id,
+              toolCallId: toolCallId,
               toolName: toolName,
-              input: parsedArgs,
+              input: action,
             });
 
             const toolResult = await (async () => {
@@ -361,10 +203,10 @@ export async function POST(request: Request) {
                 let resultData: any = { type: "text", text: "" };
                 let resultText = "";
 
-                if (toolCall.name === "computer_use") {
-                  const action = parsedArgs.action;
+                if (action.tool === "computer" || action.action) {
+                  const actionType = action.action;
 
-                  switch (action) {
+                  switch (actionType) {
                     case "screenshot": {
                       const response = await kernelClient.browsers.computer.captureScreenshot(desktop.session_id);
                       const blob = await response.blob();
@@ -373,9 +215,6 @@ export async function POST(request: Request) {
                       const timestamp = new Date().toISOString();
                       const width = resolution.x;
                       const height = resolution.y;
-
-                      const vBounds = { top: 255, middle: 511 };
-                      const hBounds = { left: 341, center: 682 };
 
                       resultText = `Screenshot taken at ${timestamp}
 
@@ -396,13 +235,13 @@ SCREEN: ${width}×${height} pixels | Aspect ratio: 4:3 | Origin: (0,0) at TOP-LE
                       break;
                     }
                     case "wait": {
-                      const duration = parsedArgs.duration || 1;
+                      const duration = action.duration || 1;
                       resultText = `Waited for ${duration} seconds`;
                       resultData = { type: "text", text: resultText };
                       break;
                     }
                     case "left_click": {
-                      const [x, y] = parsedArgs.coordinate;
+                      const [x, y] = action.coordinate;
                       await kernelClient.browsers.computer.clickMouse(desktop.session_id, {
                         x,
                         y,
@@ -413,7 +252,7 @@ SCREEN: ${width}×${height} pixels | Aspect ratio: 4:3 | Origin: (0,0) at TOP-LE
                       break;
                     }
                     case "double_click": {
-                      const [x, y] = parsedArgs.coordinate;
+                      const [x, y] = action.coordinate;
                       await kernelClient.browsers.computer.clickMouse(desktop.session_id, {
                         x,
                         y,
@@ -425,7 +264,7 @@ SCREEN: ${width}×${height} pixels | Aspect ratio: 4:3 | Origin: (0,0) at TOP-LE
                       break;
                     }
                     case "right_click": {
-                      const [x, y] = parsedArgs.coordinate;
+                      const [x, y] = action.coordinate;
                       await kernelClient.browsers.computer.clickMouse(desktop.session_id, {
                         x,
                         y,
@@ -436,7 +275,7 @@ SCREEN: ${width}×${height} pixels | Aspect ratio: 4:3 | Origin: (0,0) at TOP-LE
                       break;
                     }
                     case "mouse_move": {
-                      const [x, y] = parsedArgs.coordinate;
+                      const [x, y] = action.coordinate;
                       await kernelClient.browsers.computer.moveMouse(desktop.session_id, {
                         x,
                         y,
@@ -446,7 +285,7 @@ SCREEN: ${width}×${height} pixels | Aspect ratio: 4:3 | Origin: (0,0) at TOP-LE
                       break;
                     }
                     case "type": {
-                      const textToType = parsedArgs.text;
+                      const textToType = action.text;
                       await kernelClient.browsers.computer.typeText(desktop.session_id, {
                         text: textToType,
                       });
@@ -455,26 +294,23 @@ SCREEN: ${width}×${height} pixels | Aspect ratio: 4:3 | Origin: (0,0) at TOP-LE
                       break;
                     }
                     case "key": {
-                      let keyToPress = parsedArgs.text;
+                      let keyToPress = action.text;
                       
-                      // OnKernel uses X11 keysym names - convert common variants to X11 format
                       if (keyToPress === "Enter" || keyToPress === "enter") {
                         keyToPress = "Return";
                       }
                       
-                      console.log(`[KEY ACTION] Original: "${parsedArgs.text}", Normalized: "${keyToPress}", Sending to API: { keys: ["${keyToPress}"] }`);
-                      
                       await kernelClient.browsers.computer.pressKey(desktop.session_id, {
                         keys: [keyToPress],
                       });
-                      resultText = `Pressed key: ${parsedArgs.text}`;
+                      resultText = `Pressed key: ${action.text}`;
                       resultData = { type: "text", text: resultText };
                       break;
                     }
                     case "scroll": {
-                      const [x, y] = parsedArgs.coordinate || [512, 384];
-                      const delta_x = parsedArgs.delta_x || 0;
-                      const delta_y = parsedArgs.delta_y || 0;
+                      const [x, y] = action.coordinate || [512, 384];
+                      const delta_x = action.delta_x || 0;
+                      const delta_y = action.delta_y || 0;
                       await kernelClient.browsers.computer.scroll(desktop.session_id, {
                         x,
                         y,
@@ -486,8 +322,8 @@ SCREEN: ${width}×${height} pixels | Aspect ratio: 4:3 | Origin: (0,0) at TOP-LE
                       break;
                     }
                     case "left_click_drag": {
-                      const [startX, startY] = parsedArgs.start_coordinate;
-                      const [endX, endY] = parsedArgs.coordinate;
+                      const [startX, startY] = action.start_coordinate;
+                      const [endX, endY] = action.coordinate;
                       await kernelClient.browsers.computer.dragMouse(desktop.session_id, {
                         path: [[startX, startY], [endX, endY]],
                         button: 'left',
@@ -497,27 +333,27 @@ SCREEN: ${width}×${height} pixels | Aspect ratio: 4:3 | Origin: (0,0) at TOP-LE
                       break;
                     }
                     default: {
-                      resultText = `Unknown action: ${action}`;
+                      resultText = `Unknown action: ${actionType}`;
                       resultData = { type: "text", text: resultText };
-                      console.warn("Unknown action:", action);
+                      console.warn("Unknown action:", actionType);
                     }
                   }
 
                   sendEvent({
                     type: "tool-output-available",
-                    toolCallId: toolCall.id,
+                    toolCallId: toolCallId,
                     output: resultData,
                   });
 
                   return {
-                    tool_call_id: toolCall.id,
+                    tool_call_id: toolCallId,
                     role: "tool",
                     content: resultText,
-                    image: action === "screenshot" ? resultData.data : undefined,
+                    image: actionType === "screenshot" ? resultData.data : undefined,
                   };
-                } else if (toolCall.name === "bash_command") {
+                } else if (action.tool === "bash") {
                   const result = await kernelClient.browsers.process.exec(desktop.session_id, {
-                    command: parsedArgs.command,
+                    command: action.command,
                   });
 
                   const stdout = result.stdout_b64 ? Buffer.from(result.stdout_b64, 'base64').toString('utf-8') : '';
@@ -526,12 +362,12 @@ SCREEN: ${width}×${height} pixels | Aspect ratio: 4:3 | Origin: (0,0) at TOP-LE
 
                   sendEvent({
                     type: "tool-output-available",
-                    toolCallId: toolCall.id,
+                    toolCallId: toolCallId,
                     output: { type: "text", text: output },
                   });
 
                   return {
-                    tool_call_id: toolCall.id,
+                    tool_call_id: toolCallId,
                     role: "tool",
                     content: output,
                   };
@@ -565,7 +401,7 @@ SCREEN: ${width}×${height} pixels | Aspect ratio: 4:3 | Origin: (0,0) at TOP-LE
                 });
 
                 return {
-                  tool_call_id: toolCall.id,
+                  tool_call_id: toolCallId,
                   role: "tool",
                   content: detailedError,
                 };
@@ -574,8 +410,7 @@ SCREEN: ${width}×${height} pixels | Aspect ratio: 4:3 | Origin: (0,0) at TOP-LE
 
             if (toolResult!.image) {
               chatHistory.push({
-                role: "tool",
-                toolCallId: toolResult!.tool_call_id,
+                role: "user",
                 content: [
                   {
                     type: "text",
@@ -583,19 +418,24 @@ SCREEN: ${width}×${height} pixels | Aspect ratio: 4:3 | Origin: (0,0) at TOP-LE
                   },
                   {
                     type: "image_url",
-                    imageUrl: `data:image/png;base64,${toolResult!.image}`,
+                    image_url: {
+                      url: `data:image/png;base64,${toolResult!.image}`,
+                    },
                   },
                 ],
               });
             } else {
               chatHistory.push({
-                role: "tool",
-                toolCallId: toolResult!.tool_call_id,
+                role: "user",
                 content: toolResult!.content,
               });
             }
           } else {
+            // No action found, just text message - stream it
             if (fullText) {
+              // Stream the text content in chunks
+              streamText(fullText, sendEvent);
+              
               chatHistory.push({
                 role: "assistant",
                 content: fullText,
