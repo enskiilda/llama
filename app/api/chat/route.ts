@@ -48,12 +48,22 @@ export const revalidate = 0;
 
 const INSTRUCTIONS = `placeholder`;
 
+// Helper function to stream text in chunks
+function streamText(text: string, sendEvent: (event: any) => void) {
+  const chunkSize = 5; // Stream in small chunks for responsiveness
+  for (let i = 0; i < text.length; i += chunkSize) {
+    const chunk = text.substring(i, i + chunkSize);
+    sendEvent({
+      type: "text-delta",
+      textDelta: chunk,
+    });
+  }
+}
 
 // Helper function to extract JSON action from text
 function extractActionFromText(text: string): { action: any; cleanText: string } | null {
   // Look for JSON action block in format: ```json ... ``` or just {...}
   const jsonBlockMatch = text.match(/```json\s*([\s\S]*?)\s*```/);
-  const jsonMatch = text.match(/\{[^{}]*"action"[^{}]*\}|\{[^{}]*"tool"[^{}]*\}/);
   
   let actionJson = null;
   let cleanText = text;
@@ -65,12 +75,32 @@ function extractActionFromText(text: string): { action: any; cleanText: string }
     } catch (e) {
       // Invalid JSON, ignore
     }
-  } else if (jsonMatch) {
-    try {
-      actionJson = JSON.parse(jsonMatch[0]);
-      cleanText = text.replace(jsonMatch[0], '').trim();
-    } catch (e) {
-      // Invalid JSON, ignore
+  } else {
+    // Try to find a JSON object with proper brace matching
+    let depth = 0;
+    let start = -1;
+    for (let i = 0; i < text.length; i++) {
+      if (text[i] === '{') {
+        if (depth === 0) start = i;
+        depth++;
+      } else if (text[i] === '}') {
+        depth--;
+        if (depth === 0 && start !== -1) {
+          const jsonStr = text.substring(start, i + 1);
+          try {
+            const parsed = JSON.parse(jsonStr);
+            if (parsed.action || parsed.tool) {
+              actionJson = parsed;
+              cleanText = text.substring(0, start) + text.substring(i + 1);
+              cleanText = cleanText.trim();
+              break;
+            }
+          } catch (e) {
+            // Invalid JSON, continue
+          }
+          start = -1;
+        }
+      }
     }
   }
 
@@ -148,12 +178,7 @@ export async function POST(request: Request) {
             // If there's clean text along with action, stream it first as a separate message
             if (cleanText) {
               // Stream the text content (without the action JSON)
-              for (const char of cleanText) {
-                sendEvent({
-                  type: "text-delta",
-                  textDelta: char,
-                });
-              }
+              streamText(cleanText, sendEvent);
               
               // Add to chat history
               chatHistory.push({
@@ -408,13 +433,8 @@ SCREEN: ${width}×${height} pixels | Aspect ratio: 4:3 | Origin: (0,0) at TOP-LE
           } else {
             // No action found, just text message - stream it
             if (fullText) {
-              // Stream the text content character by character
-              for (const char of fullText) {
-                sendEvent({
-                  type: "text-delta",
-                  textDelta: char,
-                });
-              }
+              // Stream the text content in chunks
+              streamText(fullText, sendEvent);
               
               chatHistory.push({
                 role: "assistant",
